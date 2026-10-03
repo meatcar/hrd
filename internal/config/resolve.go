@@ -71,7 +71,16 @@ func (c *Config) ResolveRoots() []error {
 				continue
 			}
 
-			c.Repos[name] = Repo{Path: path, Groups: root.Groups}
+			repo := c.Repos[name]
+
+			repo.Path = path
+			for _, group := range root.Groups {
+				if !slices.Contains(repo.Groups, group) {
+					repo.Groups = append(repo.Groups, group)
+				}
+			}
+
+			c.Repos[name] = repo
 		}
 	}
 
@@ -80,16 +89,21 @@ func (c *Config) ResolveRoots() []error {
 	return errs
 }
 
-// discoveredRepoName picks a config name for a repo discovered under root:
-// the directory base name, falling back to "<rootName>-<base>" on
-// collision. Returns false when both are taken.
+// discoveredRepoName preserves a saved fallback name even if the base name
+// is free. Otherwise it tries the base name, then "<rootName>-<base>".
+// Returns false when both names belong to other paths.
 func (c *Config) discoveredRepoName(rootName, path string) (string, bool) {
 	base := filepath.Base(path)
-	if _, exists := c.Repos[base]; !exists {
+	alt := rootName + "-" + base
+
+	if repo, exists := c.Repos[alt]; exists && repo.Path == path {
+		return alt, true
+	}
+
+	if repo, exists := c.Repos[base]; !exists || repo.Path == path {
 		return base, true
 	}
 
-	alt := rootName + "-" + base
 	if _, exists := c.Repos[alt]; !exists {
 		return alt, true
 	}

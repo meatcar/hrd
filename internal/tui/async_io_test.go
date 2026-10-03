@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/hugoh/hrd/internal/config"
+	"github.com/hugoh/hrd/internal/discover/discovertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,6 +85,61 @@ func TestGroupAddSavesOffUpdate(t *testing.T) {
 
 	require.Contains(t, m.cfg.Groups, "work")
 	require.Equal(t, screenMain, m.screen)
+}
+
+func TestGroupAddRootDiscoveredRepo(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		discovertest.FakeGitDirAt(t, filepath.Join(root, name))
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, config.Save(cfgPath, config.Config{
+		Roots: map[string]config.Root{"owner": {Path: root, Groups: []string{"owner"}}},
+	}))
+
+	m, err := newTestModel(t.Context(), t, Options{ConfigPath: cfgPath, Group: "owner"})
+	require.NoError(t, err)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	for _, key := range []tea.KeyPressMsg{
+		{Code: 'x'},
+		{Code: tea.KeySpace},
+		{Code: tea.KeyEnter},
+		{Code: 'g'},
+		{Code: tea.KeyDown},
+		{Code: tea.KeyEnter},
+		{Code: 'f', Text: "focus"},
+		{Code: tea.KeyEnter},
+	} {
+		_, cmd := m.Update(key)
+		feed(m, cmd)
+	}
+
+	require.Equal(t, []string{"beta"}, m.cfg.Groups["focus"].Repos)
+	require.Equal(t, []string{"alpha", "beta"}, m.cfg.Groups["owner"].Repos)
+
+	onDisk, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.Equal(t, map[string]config.Repo{
+		"beta": {Path: filepath.Join(root, "beta"), Groups: []string{"focus"}},
+	}, onDisk.Repos, "only the selected repo and its explicit group should be persisted")
+
+	m.Update(tea.KeyPressMsg{Code: '@'})
+	require.Len(t, m.groupList.Items(), 4)
+	require.Equal(t, "focus", m.groupList.Items()[2].FilterValue())
+	require.Equal(t, "owner", m.groupList.Items()[3].FilterValue())
+	m.groupList.Select(2)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.Equal(t, []string{"beta"}, m.tableRepos())
+
+	restarted, err := newTestModel(t.Context(), t, Options{ConfigPath: cfgPath, Group: "focus"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha", "beta"}, restarted.repoOrder)
+	require.Equal(t, []string{"beta"}, restarted.tableRepos())
+	require.Equal(t, []string{"alpha", "beta"}, restarted.cfg.Groups["owner"].Repos)
 }
 
 func TestGroupAddFailureAlertsAndStaysOnGroupScreen(t *testing.T) {

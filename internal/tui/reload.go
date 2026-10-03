@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"maps"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/hugoh/hrd/internal/config"
@@ -16,8 +17,8 @@ type configLoadedMsg struct {
 	err error
 }
 
-// groupSavedMsg reports the outcome of adding the selection to a group; cfg
-// is the merged config that was written.
+// groupSavedMsg reports a group save. cfg includes discovered repos,
+// even when they have no entry in the saved config.
 type groupSavedMsg struct {
 	cfg config.Config
 	err error
@@ -125,12 +126,9 @@ func (m *model) restoreCursorByName(name string) {
 	}
 }
 
-// mutateConfigFile reloads the config, applies mutate, and saves — the only
-// safe way for the TUI to persist a change without clobbering a concurrent
-// external write (e.g. a `hrd repo add` run while the TUI was open) with a
-// stale in-memory copy. mutate must guard against names no longer present in
-// the freshly loaded config rather than assuming the caller's selection is
-// still valid. It returns the merged config that was written.
+// mutateConfigFile reloads the config to preserve edits made since the TUI
+// loaded it. mutate must check that its target repos still exist.
+// Discovery runs after saving to avoid writing every discovered repo to disk.
 func mutateConfigFile(path string, mutate func(cfg *config.Config)) (config.Config, error) {
 	fresh, err := config.Load(path)
 	if err != nil {
@@ -143,16 +141,27 @@ func mutateConfigFile(path string, mutate func(cfg *config.Config)) (config.Conf
 		return config.Config{}, fmt.Errorf("saving config: %w", err)
 	}
 
+	fresh.ResolveRoots()
+
 	return fresh, nil
 }
 
-// addToGroup tags names into group, skipping any repo removed concurrently
-// so it isn't resurrected.
+// addToGroup adds memberships for repos still tracked by the config or its
+// directory roots. New entries contain only the requested group.
 func addToGroup(names []string, group string) func(cfg *config.Config) {
 	return func(cfg *config.Config) {
+		resolved := *cfg
+		resolved.Repos = maps.Clone(cfg.Repos)
+		resolved.ResolveRoots()
+
 		for _, repoName := range names {
-			if _, ok := cfg.Repos[repoName]; !ok {
+			repo, ok := resolved.Repos[repoName]
+			if !ok {
 				continue
+			}
+
+			if _, explicit := cfg.Repos[repoName]; !explicit {
+				cfg.Repos[repoName] = config.Repo{Path: repo.Path}
 			}
 
 			cfg.AddRepoToGroup(repoName, group)

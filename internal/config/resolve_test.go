@@ -119,6 +119,38 @@ func TestResolveRoots_CollisionFallsBackToRootName(t *testing.T) {
 	assert.Equal(t, fooB, cfg.Repos["rootb-foo"].Path)
 }
 
+func TestResolveRoots_ReusesPersistedFallback(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := filepath.Join(root, "foo")
+	fakeGitRepo(t, path)
+
+	cfg := Config{
+		Repos: map[string]Repo{
+			"foo":      {Path: "/static/foo"},
+			"root-foo": {Path: path, Groups: []string{"focus", "owner"}},
+		},
+		Roots: map[string]Root{
+			"root": {Path: root, Groups: []string{"owner", "team"}},
+		},
+	}
+
+	require.Empty(t, cfg.ResolveRoots())
+	require.Empty(t, cfg.ResolveRoots())
+	assert.Equal(t, map[string]Repo{
+		"foo":      {Path: "/static/foo"},
+		"root-foo": {Path: path, Groups: []string{"focus", "owner", "team"}},
+	}, cfg.Repos)
+	assert.Equal(t, []string{"root-foo"}, cfg.Groups["owner"].Repos)
+	assert.Equal(t, []string{"root-foo"}, cfg.Groups["team"].Repos)
+
+	delete(cfg.Repos, "foo")
+	require.Empty(t, cfg.ResolveRoots())
+	assert.Len(t, cfg.Repos, 1, "the persisted name must survive removal of the original collision")
+	assert.Equal(t, []string{"root-foo"}, cfg.Groups["owner"].Repos)
+}
+
 func TestResolveRoots_SkipsWhenFallbackAlsoTaken(t *testing.T) {
 	backend.ResetDetectCache()
 

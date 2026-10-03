@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hugoh/hrd/internal/config"
+	"github.com/hugoh/hrd/internal/discover/discovertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zenizh/go-capturer"
@@ -183,6 +186,53 @@ func TestGroupAdd(t *testing.T) {
 	assert.Equal(t, []string{"work"}, cfg.Repos["repo1"].Groups)
 }
 
+func TestGroupAddDiscoveredRepo(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		discovertest.FakeGitDirAt(t, filepath.Join(root, name))
+	}
+
+	t.Chdir(filepath.Join(root, "beta"))
+
+	for _, tt := range []struct{ name, arg string }{
+		{"name", "beta"},
+		{"path", filepath.Join(root, "beta")},
+		{"dot", "."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			roots := map[string]config.Root{"owner": {Path: root, Groups: []string{"owner"}}}
+			cfgPath := setupTestConfig(t, config.Config{
+				Repos: map[string]config.Repo{
+					"alpha": {Path: filepath.Join(root, "alpha"), Groups: []string{"existing"}},
+				},
+				Roots: roots,
+			})
+
+			for range 2 {
+				err := runHRD(t, cfgPath, []string{"group", "add", "@focus", "alpha", tt.arg})
+				require.NoError(t, err)
+			}
+
+			saved, err := config.Load(cfgPath)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]config.Repo{
+				"alpha": {
+					Path:   filepath.Join(root, "alpha"),
+					Groups: []string{"existing", "focus"},
+				},
+				"beta": {Path: filepath.Join(root, "beta"), Groups: []string{"focus"}},
+			}, saved.Repos)
+			assert.Equal(t, roots, saved.Roots)
+
+			resolved, warnings, err := config.LoadResolved(cfgPath)
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			assert.Equal(t, []string{"alpha", "beta"}, resolved.Groups["focus"].Repos)
+			assert.Equal(t, []string{"alpha", "beta", "gamma"}, resolved.Groups["owner"].Repos)
+		})
+	}
+}
+
 // TestGroupAddMultipleRepos verifies the group-first argument order allows
 // adding several repos to one group in a single invocation.
 func TestGroupAddMultipleRepos(t *testing.T) {
@@ -199,13 +249,22 @@ func TestGroupAddMultipleRepos(t *testing.T) {
 }
 
 func TestGroupAddUnknownRepo(t *testing.T) {
+	root := t.TempDir()
+	discovertest.FakeGitDirAt(t, filepath.Join(root, "beta"))
 	cfgPath := setupTestConfig(t, config.Config{
-		Repos: map[string]config.Repo{},
+		Repos: map[string]config.Repo{"alpha": {Path: "/tmp/alpha"}},
+		Roots: map[string]config.Root{"owner": {Path: root}},
 	})
+	before, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
 
-	err := runHRD(t, cfgPath, []string{"group", "add", "work", "nonexistent"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown repo")
+	err = runHRD(t, cfgPath, []string{"group", "add", "work", "alpha", "beta", "nonexistent"})
+	require.ErrorIs(t, err, errUnknownRepo)
+	assert.Contains(t, err.Error(), "nonexistent")
+
+	after, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
 }
 
 func TestGroupAddResolvesDirectoryArg(t *testing.T) {
@@ -282,13 +341,16 @@ func TestGroupRmMultipleRepos(t *testing.T) {
 }
 
 func TestGroupRmUnknownRepo(t *testing.T) {
+	root := t.TempDir()
+	discovertest.FakeGitDirAt(t, filepath.Join(root, "beta"))
 	cfgPath := setupTestConfig(t, config.Config{
-		Repos: map[string]config.Repo{},
+		Roots: map[string]config.Root{"owner": {Path: root, Groups: []string{"work"}}},
 	})
 
-	err := runHRD(t, cfgPath, []string{"group", "rm", "work", "nonexistent"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown repo")
+	for _, name := range []string{"beta", "nonexistent"} {
+		err := runHRD(t, cfgPath, []string{"group", "rm", "work", name})
+		require.ErrorIs(t, err, errUnknownRepo)
+	}
 }
 
 // TestGroupRmValidatesGroupName is a symmetry regression test: "group rm"

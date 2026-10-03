@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -393,6 +394,7 @@ func groupMemberAction(
 	cfgPath *string,
 	cmdLabel string,
 	usageErr error,
+	includeDiscovered bool,
 	act func(*config.Config, string, string),
 ) func(cmd *cobra.Command, args []string) error {
 	return func(_ *cobra.Command, args []string) error {
@@ -410,10 +412,22 @@ func groupMemberAction(
 			return err
 		}
 
+		resolved := cfg
+		if includeDiscovered {
+			resolved.Repos = maps.Clone(cfg.Repos)
+			for _, warning := range resolved.ResolveRoots() {
+				ui.Warnf("%v", warning)
+			}
+		}
+
 		for _, repoArg := range args[1:] {
-			repoName, err := resolveRepoArg(&cfg, repoArg)
+			repoName, err := resolveRepoArg(&resolved, repoArg)
 			if err != nil {
 				return err
+			}
+
+			if _, explicit := cfg.Repos[repoName]; !explicit {
+				cfg.Repos[repoName] = config.Repo{Path: resolved.Repos[repoName].Path}
 			}
 
 			act(&cfg, repoName, group)
@@ -429,7 +443,7 @@ func groupAddCmd(cfgPath *string) *cobra.Command {
 		Short:             "add one or more repos to a group",
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: completeFirstArgWithGroups(cfgPath),
-		RunE: groupMemberAction(cfgPath, "group add", errGroupAddUsage,
+		RunE: groupMemberAction(cfgPath, "group add", errGroupAddUsage, true,
 			func(cfg *config.Config, name, group string) {
 				cfg.AddRepoToGroup(name, group)
 				ui.Infof("added %q to group %q", name, group)
@@ -443,7 +457,7 @@ func groupRmCmd(cfgPath *string) *cobra.Command {
 		Short:             "remove one or more repos from a group",
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: completeFirstArgWithGroups(cfgPath),
-		RunE: groupMemberAction(cfgPath, "group rm", errGroupRmUsage,
+		RunE: groupMemberAction(cfgPath, "group rm", errGroupRmUsage, false,
 			func(cfg *config.Config, name, group string) {
 				cfg.RemoveRepoFromGroup(name, group)
 				ui.Infof("removed %q from group %q", name, group)
